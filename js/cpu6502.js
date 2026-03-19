@@ -380,165 +380,192 @@ const CPU6502 = (() => {
   // Supports: LDA/LDX/LDY/STA/STX/STY + immediate, zero page, absolute
   // ADC/SBC/AND/ORA/EOR + immediate
   // INX/INY/DEX/DEY/NOP/BRK + branches + JMP/JSR/RTS
+  // ── Assembler ─────────────────────────────────────────────
+  // Uses a flat 64KB Uint8Array so .org directives place bytes
+  // at their actual addresses (supports vectors at $FFFA-$FFFF)
   function assemble(source) {
-    const lines = source.split('\n');
-    const bytes = [];
+    const mem = new Uint8Array(65536);
     const labels = {};
-    const patches = []; // { byteIdx, label, type: 'abs'|'rel' }
+    const lines = source.split('\n');
 
-    // Two-pass assembler
+    const parseNum = (s) => {
+      s = s.trim().replace(/^#/, '');
+      if (s.startsWith('$'))  return parseInt(s.slice(1), 16);
+      if (s.startsWith('0x') || s.startsWith('0X')) return parseInt(s, 16);
+      if (s.startsWith('%'))  return parseInt(s.slice(1), 2);
+      return parseInt(s, 10);
+    };
+
+    // Two-pass: pass 0 collects labels, pass 1 emits bytes
     for (let pass = 0; pass < 2; pass++) {
-      bytes.length = 0;
-      let addr = 0;
+      let addr = 0x8000; // default start
 
-      lines.forEach((rawLine, lineNum) => {
+      const emit = (...bs) => {
+        // Must increment addr per byte so each byte lands at the right address
+        bs.forEach(b => {
+          if (pass === 1) mem[addr & 0xFFFF] = b & 0xFF;
+          addr = (addr + 1) & 0xFFFF;
+        });
+      };
+
+      for (const rawLine of lines) {
         const line = rawLine.replace(/;.*/, '').trim();
-        if (!line) return;
+        if (!line) continue;
 
         // .org directive
-        if (line.startsWith('.org') || line.startsWith('ORG')) {
-          const m = line.match(/[oO][rR][gG]\s+(0x[\da-fA-F]+|\$[\da-fA-F]+|\d+)/);
-          if (m) addr = parseInt(m[1].replace('$','0x'));
-          return;
+        const orgM = line.match(/^\.?[oO][rR][gG]\s+([\$0-9a-fA-Fx%]+)/);
+        if (orgM) { addr = parseNum(orgM[1]) & 0xFFFF; continue; }
+
+        // Label (may have instruction on same line: "RESET: SEI")
+        let rest = line;
+        const lblM = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)/);
+        if (lblM) {
+          if (pass === 0) labels[lblM[1].toUpperCase()] = addr;
+          rest = lblM[2].trim();
+          if (!rest) continue;
         }
 
-        // Label definition
-        if (line.endsWith(':')) {
-          if (pass === 0) labels[line.slice(0,-1).toUpperCase()] = addr;
-          return;
-        }
-
-        const parts = line.split(/[\s,]+/).filter(Boolean);
+        const parts = rest.split(/[\s,]+/).filter(Boolean);
         const mnem = parts[0].toUpperCase();
         const arg  = parts[1] || '';
+        const arg2 = parts[2] || '';
 
-        const emit = (...bs) => {
-          if (pass === 1) bytes.push(...bs);
-          addr += bs.length;
-        };
-
-        const imm = (a) => { const m = a.match(/^#(0x[\da-fA-F]+|\$[\da-fA-F]+|%[01]+|\d+)$/i); if(!m) return null; return parseInt(m[1].replace('$','0x').replace('%','0b')); };
-        const zp  = (a) => { const m = a.match(/^(0x[\da-fA-F]+|\$[\da-fA-F]{1,2}|\d{1,3})$/i); if(!m) return null; return parseInt(m[1].replace('$','0x')); };
-        const abs16 = (a) => { const m = a.match(/^(0x[\da-fA-F]+|\$[\da-fA-F]{3,4}|\d+)$/i); if(!m) return null; const v=parseInt(m[1].replace('$','0x')); return v > 0xFF ? v : null; };
-        const labelAddr = (a) => pass===1 ? (labels[a.toUpperCase()] ?? null) : 0;
+        const isImm  = (a) => /^#/.test(a);
+        const isZP   = (a) => { const v = parseNum(a); return !isNaN(v) && v >= 0 && v <= 0xFF && !/[Xx]$/.test(a) && !/[Yy]$/.test(a); };
+        const isAbs  = (a) => { const v = parseNum(a); return !isNaN(v) && v >= 0x100 && v <= 0xFFFF; };
+        const isLabel= (a) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(a);
+        const getAddr= (a) => isLabel(a) ? (pass===1 ? (labels[a.toUpperCase()] ?? 0) : 0) : parseNum(a);
+        const isIdxX = (a) => /[Xx]$/.test(a);
+        const isIdxY = (a) => /[Yy]$/.test(a);
+        const stripIdx=(a) => a.replace(/[,\s]*[XxYy]$/, '');
 
         switch (mnem) {
-          case 'LDA': {
-            const i=imm(arg); if(i!==null){emit(0xA9,i);break;}
-            const z=zp(arg);  if(z!==null){emit(0xA5,z);break;}
-            const a=abs16(arg)||labelAddr(arg); if(a!==null){emit(0xAD,a&0xFF,(a>>8)&0xFF);break;}
-            break;
-          }
-          case 'LDX': {
-            const i=imm(arg); if(i!==null){emit(0xA2,i);break;}
-            const z=zp(arg);  if(z!==null){emit(0xA6,z);break;}
-            const a=abs16(arg)||labelAddr(arg); if(a!==null){emit(0xAE,a&0xFF,(a>>8)&0xFF);break;}
-            break;
-          }
-          case 'LDY': {
-            const i=imm(arg); if(i!==null){emit(0xA0,i);break;}
-            const z=zp(arg);  if(z!==null){emit(0xA4,z);break;}
-            break;
-          }
-          case 'STA': {
-            const z=zp(arg);  if(z!==null){emit(0x85,z);break;}
-            const a=abs16(arg)||labelAddr(arg); if(a!==null){emit(0x8D,a&0xFF,(a>>8)&0xFF);break;}
-            break;
-          }
-          case 'STX': { const z=zp(arg); if(z!==null){emit(0x86,z);break;} break; }
-          case 'STY': { const z=zp(arg); if(z!==null){emit(0x84,z);break;} break; }
-          case 'ADC': { const i=imm(arg); if(i!==null){emit(0x69,i);} break; }
-          case 'SBC': { const i=imm(arg); if(i!==null){emit(0xE9,i);} break; }
-          case 'AND': { const i=imm(arg); if(i!==null){emit(0x29,i);} break; }
-          case 'ORA': { const i=imm(arg); if(i!==null){emit(0x09,i);} break; }
-          case 'EOR': { const i=imm(arg); if(i!==null){emit(0x49,i);} break; }
-          case 'CMP': { const i=imm(arg); if(i!==null){emit(0xC9,i);} break; }
-          case 'CPX': { const i=imm(arg); if(i!==null){emit(0xE0,i);} break; }
-          case 'CPY': { const i=imm(arg); if(i!==null){emit(0xC0,i);} break; }
-          case 'INC': { const z=zp(arg); if(z!==null){emit(0xE6,z);break;} const a=abs16(arg); if(a!==null){emit(0xEE,a&0xFF,(a>>8)&0xFF);} break; }
-          case 'DEC': { const z=zp(arg); if(z!==null){emit(0xC6,z);break;} break; }
-          case 'INX': emit(0xE8); break;
-          case 'INY': emit(0xC8); break;
-          case 'DEX': emit(0xCA); break;
-          case 'DEY': emit(0x88); break;
-          case 'TAX': emit(0xAA); break;
-          case 'TAY': emit(0xA8); break;
-          case 'TXA': emit(0x8A); break;
-          case 'TYA': emit(0x98); break;
-          case 'TXS': emit(0x9A); break;
-          case 'TSX': emit(0xBA); break;
-          case 'PHA': emit(0x48); break;
-          case 'PLA': emit(0x68); break;
-          case 'PHP': emit(0x08); break;
-          case 'PLP': emit(0x28); break;
-          case 'CLC': emit(0x18); break;
-          case 'SEC': emit(0x38); break;
-          case 'CLI': emit(0x58); break;
-          case 'SEI': emit(0x78); break;
-          case 'CLD': emit(0xD8); break;
-          case 'SED': emit(0xF8); break;
-          case 'CLV': emit(0xB8); break;
-          case 'NOP': emit(0xEA); break;
-          case 'BRK': emit(0x00); break;
-          case 'RTS': emit(0x60); break;
-          case 'RTI': emit(0x40); break;
-          case 'ASL': emit(0x0A); break;
-          case 'LSR': emit(0x4A); break;
-          case 'ROL': emit(0x2A); break;
-          case 'ROR': emit(0x6A); break;
-          case 'JMP': {
-            const a = abs16(arg) ?? labelAddr(arg);
-            if (a !== null) emit(0x4C, a&0xFF, (a>>8)&0xFF);
-            break;
-          }
-          case 'JSR': {
-            const a = abs16(arg) ?? labelAddr(arg);
-            if (a !== null) emit(0x20, a&0xFF, (a>>8)&0xFF);
-            break;
-          }
-          // Branches (relative)
+          // ── Load/Store ──
+          case 'LDA':
+            if (isImm(arg))                            { emit(0xA9, parseNum(arg)); break; }
+            if (isZP(arg) && !isIdxX(arg2||arg))       { emit(0xA5, parseNum(arg)); break; }
+            if (isZP(stripIdx(arg)) && isIdxX(arg2||'x')) { emit(0xB5, parseNum(stripIdx(arg))); break; }
+            { const a=getAddr(arg); emit(0xAD, a&0xFF, (a>>8)&0xFF); } break;
+          case 'LDX':
+            if (isImm(arg))                            { emit(0xA2, parseNum(arg)); break; }
+            if (isZP(arg))                             { emit(0xA6, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0xAE, a&0xFF, (a>>8)&0xFF); } break;
+          case 'LDY':
+            if (isImm(arg))                            { emit(0xA0, parseNum(arg)); break; }
+            if (isZP(arg))                             { emit(0xA4, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0xAC, a&0xFF, (a>>8)&0xFF); } break;
+          case 'STA':
+            if (isZP(arg) && !isIdxX(arg2||''))       { emit(0x85, parseNum(arg)); break; }
+            if (isZP(stripIdx(arg)) && isIdxX(arg2||'x')) { emit(0x95, parseNum(stripIdx(arg))); break; }
+            { const a=getAddr(arg); if(isIdxX(arg2||'')) emit(0x9D,a&0xFF,(a>>8)&0xFF); else emit(0x8D,a&0xFF,(a>>8)&0xFF); } break;
+          case 'STX':
+            if (isZP(arg))  { emit(0x86, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0x8E, a&0xFF, (a>>8)&0xFF); } break;
+          case 'STY':
+            if (isZP(arg))  { emit(0x84, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0x8C, a&0xFF, (a>>8)&0xFF); } break;
+          // ── ALU immediate ──
+          case 'ADC': emit(0x69, parseNum(arg)); break;
+          case 'SBC': emit(0xE9, parseNum(arg)); break;
+          case 'AND': if(isImm(arg)){emit(0x29,parseNum(arg));}else{const a=getAddr(arg);emit(0x2D,a&0xFF,(a>>8)&0xFF);} break;
+          case 'ORA': if(isImm(arg)){emit(0x09,parseNum(arg));}else{const a=getAddr(arg);emit(0x0D,a&0xFF,(a>>8)&0xFF);} break;
+          case 'EOR': if(isImm(arg)){emit(0x49,parseNum(arg));}else{const a=getAddr(arg);emit(0x4D,a&0xFF,(a>>8)&0xFF);} break;
+          case 'CMP': if(isImm(arg)){emit(0xC9,parseNum(arg));}else{const a=getAddr(arg);emit(0xCD,a&0xFF,(a>>8)&0xFF);} break;
+          case 'CPX': emit(0xE0, parseNum(arg)); break;
+          case 'CPY': emit(0xC0, parseNum(arg)); break;
+          // ── INC/DEC ──
+          case 'INC':
+            if (isZP(arg))  { emit(0xE6, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0xEE, a&0xFF, (a>>8)&0xFF); } break;
+          case 'DEC':
+            if (isZP(arg))  { emit(0xC6, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0xCE, a&0xFF, (a>>8)&0xFF); } break;
+          case 'INX': emit(0xE8); break; case 'INY': emit(0xC8); break;
+          case 'DEX': emit(0xCA); break; case 'DEY': emit(0x88); break;
+          // ── Shifts ──
+          case 'ASL': arg ? (isZP(arg)?emit(0x06,parseNum(arg)):(()=>{const a=getAddr(arg);emit(0x0E,a&0xFF,(a>>8)&0xFF)})()) : emit(0x0A); break;
+          case 'LSR': arg ? (isZP(arg)?emit(0x46,parseNum(arg)):(()=>{const a=getAddr(arg);emit(0x4E,a&0xFF,(a>>8)&0xFF)})()) : emit(0x4A); break;
+          case 'ROL': arg ? (isZP(arg)?emit(0x26,parseNum(arg)):(()=>{const a=getAddr(arg);emit(0x2E,a&0xFF,(a>>8)&0xFF)})()) : emit(0x2A); break;
+          case 'ROR': arg ? (isZP(arg)?emit(0x66,parseNum(arg)):(()=>{const a=getAddr(arg);emit(0x6E,a&0xFF,(a>>8)&0xFF)})()) : emit(0x6A); break;
+          // ── Transfers ──
+          case 'TAX':emit(0xAA);break; case 'TAY':emit(0xA8);break;
+          case 'TXA':emit(0x8A);break; case 'TYA':emit(0x98);break;
+          case 'TXS':emit(0x9A);break; case 'TSX':emit(0xBA);break;
+          // ── Stack ──
+          case 'PHA':emit(0x48);break; case 'PLA':emit(0x68);break;
+          case 'PHP':emit(0x08);break; case 'PLP':emit(0x28);break;
+          // ── Flags ──
+          case 'CLC':emit(0x18);break; case 'SEC':emit(0x38);break;
+          case 'CLI':emit(0x58);break; case 'SEI':emit(0x78);break;
+          case 'CLD':emit(0xD8);break; case 'SED':emit(0xF8);break;
+          case 'CLV':emit(0xB8);break;
+          // ── Control ──
+          case 'NOP':emit(0xEA);break; case 'BRK':emit(0x00);break;
+          case 'RTS':emit(0x60);break; case 'RTI':emit(0x40);break;
+          // ── Jump ──
+          case 'JMP': { const a=getAddr(arg); emit(0x4C, a&0xFF, (a>>8)&0xFF); break; }
+          case 'JSR': { const a=getAddr(arg); emit(0x20, a&0xFF, (a>>8)&0xFF); break; }
+          // ── BIT ──
+          case 'BIT':
+            if (isZP(arg)) { emit(0x24, parseNum(arg)); break; }
+            { const a=getAddr(arg); emit(0x2C, a&0xFF, (a>>8)&0xFF); } break;
+          // ── Branches (relative) ──
           case 'BEQ': case 'BNE': case 'BCS': case 'BCC':
           case 'BMI': case 'BPL': case 'BVS': case 'BVC': {
             const ops = {BEQ:0xF0,BNE:0xD0,BCS:0xB0,BCC:0x90,BMI:0x30,BPL:0x10,BVS:0x70,BVC:0x50};
-            const target = labelAddr(arg);
-            if (target !== null) {
-              const rel = target - (addr + 2);
-              emit(ops[mnem], rel & 0xFF);
-            } else {
-              emit(ops[mnem], 0x00); // placeholder
-            }
+            const target = getAddr(arg);
+            const rel = (target - (addr + 2)) & 0xFFFF;
+            // Convert to signed byte (-128..127)
+            const off = rel > 0x7F ? rel - 0x10000 : rel;
+            emit(ops[mnem], off & 0xFF);
             break;
           }
-          // .byte directive
+          // ── Data directives ──
           case '.BYTE': case 'DB': case '.DB':
-            parts.slice(1).forEach(p => {
-              const v = parseInt(p.replace('$','0x').replace('#',''));
+            for (let i=1; i<parts.length; i++) {
+              const v = parseNum(parts[i].replace('#',''));
               if (!isNaN(v)) emit(v & 0xFF);
-            });
+            }
             break;
-          case '.WORD': case 'DW': case '.DW':
-            parts.slice(1).forEach(p => {
-              const v = parseInt(p.replace('$','0x').replace('#',''));
-              if (!isNaN(v)) { emit(v&0xFF); emit((v>>8)&0xFF); }
-            });
+          case '.WORD': case 'DW': case '.DW': case '.WORD':
+            for (let i=1; i<parts.length; i++) {
+              let s = parts[i];
+              let v;
+              if (isLabel(s)) { v = pass===1 ? (labels[s.toUpperCase()] ?? 0) : 0; }
+              else { v = parseNum(s); }
+              if (!isNaN(v)) { emit(v & 0xFF); emit((v>>8) & 0xFF); }
+            }
             break;
         }
-      });
+      }
     }
 
-    return new Uint8Array(bytes);
+    // Return only the ROM region ($8000-$FFFF) as a Uint8Array
+    // This is the standard cartridge ROM size (32KB)
+    return mem.slice(0x8000, 0x10000);
   }
 
-  // ── Load assembled bytes into CPU memory ──────────────────
-  function loadProgram(cpu, bytes, startAddr = 0x8000) {
-    for (let i = 0; i < bytes.length; i++) {
-      cpu.mem[(startAddr + i) & 0xFFFF] = bytes[i];
+  // ── Load program into CPU memory ──────────────────────────
+  // The assembled bytes are already a ROM image starting at $8000.
+  // We copy them into the CPU's 64KB address space at $8000,
+  // then let the CPU read the reset vector from $FFFC/$FFFD
+  // (which is now correctly set by the .org $FFFC / .word directive).
+  function loadProgram(cpu, romBytes, _ignored) {
+    // romBytes is a 32KB slice from $8000–$FFFF
+    for (let i = 0; i < romBytes.length && i < 0x8000; i++) {
+      cpu.mem[0x8000 + i] = romBytes[i];
     }
-    // Set reset vector
-    cpu.mem[0xFFFC] = startAddr & 0xFF;
-    cpu.mem[0xFFFD] = (startAddr >> 8) & 0xFF;
+    // Reset vector is at $FFFC in the ROM, offset = $FFFC - $8000 = $7FFC
+    const rstLo = cpu.mem[0xFFFC];
+    const rstHi = cpu.mem[0xFFFD];
+    // If vectors are zero (no .org $FFFC in source), default to $8000
+    if (rstLo === 0 && rstHi === 0) {
+      cpu.mem[0xFFFC] = 0x00;
+      cpu.mem[0xFFFD] = 0x80;
+    }
     reset(cpu);
   }
+
 
   // ── Disassemble one instruction ───────────────────────────
   const MNEMONICS = {
