@@ -63,7 +63,7 @@ function buildVoltageMap() {
   const map  = new Map();
   const curr = new Map();
 
-  // GND = 0
+  // GND pins = 0
   for (const comp of components) {
     if (comp.pins) {
       for (const p of comp.pins) {
@@ -72,19 +72,25 @@ function buildVoltageMap() {
     }
   }
 
-  // Power sources
+  // Seed power regulators:
+  //   VIN pin = supplyVoltage (the raw rail coming in)
+  //   VOUT pin = regulated output voltage (only if regulator is on)
+  //   The component's own node ID does NOT get supplyV — it only
+  //   propagates what's on its VOUT pin to downstream components.
   for (const comp of components) {
     if (comp.type === 'power') {
       map.set(`${comp.id}:VIN`, supplyV);
-      map.set(comp.id, supplyV);
+      // Regulator node itself = 0 until VOUT is set
       if (comp.state.outputting) {
         const vout = comp.state.output_voltage || comp.props.vout || 3.3;
         map.set(`${comp.id}:VOUT`, vout);
+        // Seed the component node as vout so propagation works from it
+        map.set(comp.id, vout);
       }
     }
   }
 
-  // Propagation
+  // Iterative net propagation: voltage flows from driven pins through traces
   let changed = true, iters = 0;
   while (changed && iters < 30) {
     changed = false; iters++;
@@ -98,9 +104,12 @@ function buildVoltageMap() {
       const netV  = fromV - drop;
       if (netV > toV + 0.005) {
         map.set(tKey, netV);
-        if (netV > (map.get(t.toCompId) ?? 0) + 0.005) { map.set(t.toCompId, netV); changed = true; }
+        if (netV > (map.get(t.toCompId) ?? 0) + 0.005) {
+          map.set(t.toCompId, netV);
+          changed = true;
+        }
       }
-      if (toV > fromV + 0.005 && !map.has(fKey)) { map.set(fKey, toV); map.set(t.fromCompId, toV); changed = true; }
+      // Short detection: powered net directly driving a GND-connected pin
       if (fromV > 0.5 && toV < 0.05 && R < 0.01) _shorts.add(t.id);
     }
   }
@@ -118,7 +127,7 @@ function buildVoltageMap() {
     const P = I * I * R;
     const dt = TICK_MS / 1000 * (speed / 5);
     t.state.temp = clamp(t.state.temp + P * 0.3 - (t.state.temp - AMBIENT) * 0.008, AMBIENT, 250);
-    // Activate neighbours if current changed significantly
+    // Wake up neighbours if current changed significantly
     if (Math.abs(I - prevI) > 0.01) {
       _activeNodes.add(t.fromCompId);
       _activeNodes.add(t.toCompId);
@@ -255,16 +264,19 @@ function simComp(comp, dt) {
         heatStep(comp, P, dt);
       } else {
         comp.state.running = false; heatStep(comp, V > 0.05 ? 0.05 : 0, dt);
-        if (V > 0.05) postLogThrottled('warn', `⚠ ${comp.id} undervoltage: ${V.toFixed(2)}V`);
+        if (V > 0.05) postLogThrottled('warn', `⚠ ${comp.id} undervoltage: ${V.toFixed(2)}V (needs ${(vc*0.85).toFixed(2)}V)`);
       }
-      if (V > vc * 1.6) destroy(comp, `destructive overvoltage: ${V.toFixed(2)}V`);
+      // Overvoltage: only destroy if >50% above vcore AND above 5V absolute
+      // This prevents 3.3V rails killing 1.8V-rated CPUs at startup
+      if (V > vc * 1.5 && V > 5.0) destroy(comp, `destructive overvoltage: ${V.toFixed(2)}V on ${vc}V CPU`);
       break;
     }
     case 'ram': {
       const vn = comp.props.voltage ?? 3.3, tdp = comp.props.tdp ?? 3;
       if (V >= vn * 0.85) { comp.state.active = true; comp.state.power = tdp; heatStep(comp, tdp, dt); }
       else { comp.state.active = false; heatStep(comp, 0, dt); }
-      if (V > vn * 1.3) destroy(comp, `overvoltage: ${V.toFixed(2)}V on ${vn}V RAM`);
+      // Only destroy if >50% over nominal AND above 5V — prevents false triggers on 3.3V rail
+      if (V > vn * 1.5 && V > 5.0) destroy(comp, `overvoltage: ${V.toFixed(2)}V on ${vn}V RAM`);
       break;
     }
     case 'gpu': {
@@ -559,6 +571,16 @@ self.onmessage = function(e) {
       _sleepCounters.clear();
       _voltageMap.clear(); _currentMap.clear(); _shorts.clear();
       _waveHist = [];
+
+      // Pre-boot: initialise power regulators immediately so the voltage map
+      // is correct on the very first tick (prevents false overvoltage on tick 1)
+      for (const comp of components) {
+        if (comp.type === 'power') {
+          comp.state.outputting = supplyV >= (comp.props.vin ?? 12) * 0.7;
+          comp.state.output_voltage = comp.state.outputting ? (comp.props.vout ?? 3.3) : 0;
+        }
+      }
+
       postLog('ok', `[Physics] Initialised — ${components.length} components, ${traces.length} nets`);
       break;
 
@@ -576,7 +598,14 @@ self.onmessage = function(e) {
     case 'reset':
       running = false;
       clearInterval(_interval);
-      for (const c of components) c.state = { temp:AMBIENT, voltage:0, current:0, power:0, burned:false, running:false, _lastV:0 };
+      for (const c of components) {
+        c.state = { temp:AMBIENT, voltage:0, current:0, power:0, burned:false, running:false, _lastV:0 };
+        // Pre-boot power regulators
+        if (c.type === 'power') {
+          c.state.outputting = supplyV >= (c.props.vin ?? 12) * 0.7;
+          c.state.output_voltage = c.state.outputting ? (c.props.vout ?? 3.3) : 0;
+        }
+      }
       for (const t of traces) t.state = { temp:AMBIENT, current:0 };
       _activeNodes = new Set(components.map(c => c.id));
       _sleepCounters.clear(); _waveHist = [];
