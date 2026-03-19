@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
       }),
     });
     const data = await response.json();
-    // Reformat to match Anthropic response shape that component-ingestor expects
+    // Reformat to match Anthropic response shape that component-ingestor expects 
     const text = data.choices?.[0]?.message?.content ?? "{}";
     return new Response(JSON.stringify({
       content: [{ type: "text", text }]
