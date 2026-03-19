@@ -50,10 +50,20 @@
     </div>
 
     <div class="toolbar-group">
+      <span class="toolbar-label">IMPORT</span>
+      <button id="btn-part-search" title="Search and import any real-world component">⊕ FIND ANY PART</button>
+    </div>
+
+    <div class="toolbar-group">
       <span class="toolbar-label">BOARD</span>
       <button class="tool-btn" id="btn-clear" title="Clear Board">⊘ CLEAR</button>
       <button class="tool-btn" id="btn-export" title="Export Gerber">↓ EXPORT</button>
       <button class="tool-btn" id="btn-load-demo" title="Load Demo">★ DEMO</button>
+    </div>
+    <div class="toolbar-group">
+      <span class="toolbar-label">VIEW</span>
+      <button class="tool-btn" id="btn-thermal-toggle" title="Toggle thermal overlay">🌡 THERMAL</button>
+      <input type="range" id="thermal-opacity" min="0" max="100" value="55" title="Thermal overlay opacity" style="width:60px;accent-color:var(--orange)" />
     </div>
   </header>
 
@@ -173,6 +183,7 @@ MAIN:
     <span id="sim-time">T: 0.000s</span>
     <span id="power-draw">Power: — mW</span>
     <span id="sim-state-indicator">● STOPPED</span>
+    <span id="worker-status" style="color:var(--text-dim);font-size:9px">⊡ WORKERS</span>
   </footer>
 
   <!-- MODAL: Component Value Editor -->
@@ -189,11 +200,14 @@ MAIN:
 
   <script src="js/utils.js"></script>
   <script src="js/components.js"></script>
+  <script src="js/cpu6502.js"></script>
   <script src="js/simulator.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/oscilloscope.js"></script>
   <script src="js/debug.js"></script>
   <script src="js/editor.js"></script>
+  <script src="js/component-ingestor.js"></script>
+  <script src="js/component-search-ui.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
