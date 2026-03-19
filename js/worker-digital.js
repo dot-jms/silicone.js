@@ -157,8 +157,17 @@ const CPU = (() => {
   }
 
   function loadProgram(c, bytes, addr=0x8000) {
-    for (let i=0;i<bytes.length;i++) c.mem[(addr+i)&0xFFFF]=bytes[i];
-    c.mem[0xFFFC]=addr&0xFF; c.mem[0xFFFD]=(addr>>8)&0xFF;
+    // bytes is a 32KB ROM image starting at $8000
+    // Copy into memory at $8000
+    for (let i = 0; i < bytes.length && i < 0x8000; i++) {
+      c.mem[(addr + i) & 0xFFFF] = bytes[i];
+    }
+    // Reset vector is already IN the ROM at $FFFC (offset $7FFC from $8000).
+    // If it's zero (no .org $FFFC in source), default to addr.
+    if (c.mem[0xFFFC] === 0 && c.mem[0xFFFD] === 0) {
+      c.mem[0xFFFC] = addr & 0xFF;
+      c.mem[0xFFFD] = (addr >> 8) & 0xFF;
+    }
     reset(c);
   }
 
