@@ -67,9 +67,9 @@ const ComponentIngestor = (() => {
 
   // ── AI-powered component parser ───────────────────────────
   async function parseWithAI(partNumber, rawData, spiceText) {
-    Debug.log(`[AI] Parsing ${partNumber} with Claude...`, 'sim');
+  Debug.log(`[AI] Parsing ${partNumber} with Claude...`, 'sim');
 
-    const prompt = `You are a hardware simulation engine assistant for "Silicon Lab", a browser-based PCB simulator.
+  const prompt = `You are a hardware simulation engine assistant for "Silicon Lab", a browser-based PCB simulator.
 
 Your job is to convert component datasheet information into a JavaScript simulation definition.
 
@@ -128,25 +128,35 @@ Use realistic pin counts and placement for the actual chip.
 Return ONLY the JSON object, nothing else.`;
 
   try {
-  const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+    const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
 
-      const data = await response.json();
-      const text = data.content?.[0]?.text || '';
-      // Strip any accidental markdown
-      const clean = text.replace(/```json|```/g, '').trim();
-      return JSON.parse(clean);
-    } catch (err) {
-      Debug.log(`[AI] Parse error: ${err.message}`, 'error');
-      return null;
+    if (!response.ok) {
+      throw new Error(`Proxy returned ${response.status}`);
     }
-  }
 
+    const data = await response.json();
+
+    // Handle both Anthropic format and OpenRouter format
+    const text = data.content?.[0]?.text
+      || data.choices?.[0]?.message?.content
+      || '';
+
+    if (!text) throw new Error('Empty response from AI');
+
+    const clean = text.replace(/```json|```/g, '').trim();
+    return JSON.parse(clean);
+
+  } catch (err) {
+    Debug.log(`[AI] Parse error: ${err.message}`, 'error');
+    return null;
+  }
+}
   // ── Family matcher ─────────────────────────────────────────
   function findFamilyData(partNumber) {
     const pnUpper = partNumber.toUpperCase();
