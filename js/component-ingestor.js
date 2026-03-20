@@ -127,16 +127,14 @@ Pin x/y must place pins ON the component edges (x=0 for left edge, x=width for r
 Use realistic pin counts and placement for the actual chip.
 Return ONLY the JSON object, nothing else.`;
 
-    try {
-      const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
+  try {
+  const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
 
       const data = await response.json();
       const text = data.content?.[0]?.text || '';
