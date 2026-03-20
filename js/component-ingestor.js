@@ -128,7 +128,7 @@ Use realistic pin counts and placement for the actual chip.
 Return ONLY the JSON object, nothing else.`;
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
