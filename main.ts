@@ -17,7 +17,7 @@ Deno.serve(async (req) => {
 
   // ── Health check ───────────────────────────────────────────
   if (url.pathname === "/health") {
-    const key = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+    const key = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
     console.log("[health] key present:", key.length > 0);
     return new Response(JSON.stringify({
       ok: true,
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
       }), { headers });
     }
 
-    const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+    const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
     if (!apiKey) {
       console.error("[error] OPENROUTER_API_KEY is not set");
       return new Response(JSON.stringify({
