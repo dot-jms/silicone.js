@@ -27,10 +27,11 @@ const ComponentIngestor = (() => {
     (pn) => `https://raw.githubusercontent.com/eventuallyconsultant/codemodel/main/spice/${pn.toLowerCase()}.lib`,
   ];
 
-  // ── Open Parts DB (no key needed) ─────────────────────────
-  // We use the free Kitspace parts API as our metadata source
+  // ── Open Parts DB ──────────────────────────────────────────
+  // Proxied through Deno to avoid CORS issues in the browser
+  const PROXY = 'https://siliconejs.dot-jms.deno.net';
   const KITSPACE_SEARCH = (q) =>
-    `https://api.kitspace.org/v1/1_part_searches?q=${encodeURIComponent(q)}&limit=8`;
+    `${PROXY}/search?q=${encodeURIComponent(q)}`;
 
   // ── Known behavioral models (community digital twins) ─────
   // These map part families to pre-built logic descriptions
@@ -214,7 +215,7 @@ Return ONLY the JSON object, nothing else.`;
     // 2. Try Kitspace API (CORS-open)
     try {
       const url = KITSPACE_SEARCH(query);
-      const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (resp.ok) {
         const json = await resp.json();
         const items = Array.isArray(json) ? json : (json.results || json.parts || []);
@@ -524,7 +525,6 @@ Return ONLY the JSON object, nothing else.`;
 
   // ── Proxy diagnostics ─────────────────────────────────────
   async function testProxy() {
-    const PROXY = 'https://siliconejs.dot-jms.deno.net';
     Debug.log('[Diag] Testing proxy connection...', 'info');
     try {
       // 1. Echo test (no API key needed)
