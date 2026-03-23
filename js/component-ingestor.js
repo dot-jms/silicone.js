@@ -129,7 +129,7 @@ Return ONLY the JSON object, nothing else.`;
 
   try {
     Debug.log(`[AI] Contacting proxy...`, 'info');
-    const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
+    const response = await fetch('https://siliconejs.dot-jms.deno.net', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -524,7 +524,7 @@ Return ONLY the JSON object, nothing else.`;
 
   // ── Proxy diagnostics ─────────────────────────────────────
   async function testProxy() {
-    const PROXY = 'https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net';
+    const PROXY = 'https://siliconejs.dot-jms.deno.net';
     Debug.log('[Diag] Testing proxy connection...', 'info');
     try {
       // 1. Echo test (no API key needed)
