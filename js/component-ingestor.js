@@ -128,32 +128,55 @@ Use realistic pin counts and placement for the actual chip.
 Return ONLY the JSON object, nothing else.`;
 
   try {
+    Debug.log(`[AI] Contacting proxy...`, 'info');
     const response = await fetch('https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: [{ role: 'user', content: prompt }],
       }),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
-      throw new Error(`Proxy returned ${response.status}`);
+      let errBody = '';
+      try { errBody = await response.text(); } catch (_) {}
+      throw new Error(`Proxy HTTP ${response.status} — ${errBody.slice(0, 200)}`);
     }
 
     const data = await response.json();
 
-    // Handle both Anthropic format and OpenRouter format
+    // Log any _debug info the proxy sent back
+    if (data._debug) {
+      Debug.log(`[AI] Proxy debug: model=${data._debug.model ?? '?'}, finish=${data._debug.finishReason ?? '?'}`, 'info');
+    }
+    if (data.error) {
+      throw new Error(`Proxy error: ${data.error}`);
+    }
+
     const text = data.content?.[0]?.text
       || data.choices?.[0]?.message?.content
       || '';
 
-    if (!text) throw new Error('Empty response from AI');
+    if (!text) throw new Error('Proxy returned empty text content');
 
-    const clean = text.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
+    Debug.log(`[AI] Got response (${text.length} chars), parsing JSON...`, 'info');
+
+    // Strip any accidental markdown fences
+    const clean = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(clean);
+    } catch (jsonErr) {
+      Debug.log(`[AI] JSON parse failed. Raw snippet: ${clean.slice(0, 120)}`, 'error');
+      throw new Error(`JSON parse error: ${jsonErr.message}`);
+    }
+
+    return parsed;
 
   } catch (err) {
-    Debug.log(`[AI] Parse error: ${err.message}`, 'error');
+    Debug.log(`[AI] Parse error for ${partNumber}: ${err.message}`, 'error');
     return null;
   }
 }
@@ -499,6 +522,66 @@ Return ONLY the JSON object, nothing else.`;
     return key;
   }
 
+  // ── Proxy diagnostics ─────────────────────────────────────
+  async function testProxy() {
+    const PROXY = 'https://siliconejs-vhkbvt8ak5a9.dot-jms.deno.net';
+    Debug.log('[Diag] Testing proxy connection...', 'info');
+    try {
+      // 1. Echo test (no API key needed)
+      const echoResp = await fetch(PROXY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ echo: true }),
+        signal: AbortSignal.timeout(5000),
+      });
+      Debug.log(`[Diag] Proxy reachable: HTTP ${echoResp.status}`, echoResp.ok ? 'ok' : 'error');
+
+      if (!echoResp.ok) {
+        const t = await echoResp.text();
+        Debug.log(`[Diag] Proxy body: ${t.slice(0, 200)}`, 'error');
+        return;
+      }
+
+      const echoData = await echoResp.json();
+      if (echoData.content?.[0]?.text) {
+        Debug.log('[Diag] Echo mode works ✓', 'ok');
+      }
+
+      // 2. Health check
+      const healthResp = await fetch(PROXY + '/health', {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (healthResp.ok) {
+        const h = await healthResp.json();
+        Debug.log(`[Diag] API key present: ${h.keyPresent} (prefix: ${h.keyPrefix})`, h.keyPresent ? 'ok' : 'error');
+        if (!h.keyPresent) {
+          Debug.log('[Diag] Fix: set OPENROUTER_API_KEY in Deno Deploy env vars', 'error');
+        }
+      }
+
+      // 3. Live AI test with a simple part
+      Debug.log('[Diag] Sending live AI test (NE555)...', 'info');
+      const aiResp = await fetch(PROXY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'Reply with exactly: {"ok":true}' }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const aiData = await aiResp.json();
+      if (aiData.error) {
+        Debug.log(`[Diag] AI call failed: ${aiData.error}`, 'error');
+      } else {
+        const text = aiData.content?.[0]?.text ?? '';
+        Debug.log(`[Diag] AI responded (${text.length} chars): ${text.slice(0, 80)}`, 'ok');
+      }
+
+    } catch (err) {
+      Debug.log(`[Diag] Proxy unreachable: ${err.message}`, 'error');
+    }
+  }
+
   // ── Public API ────────────────────────────────────────────
   return {
     search: searchParts,
@@ -506,6 +589,7 @@ Return ONLY the JSON object, nothing else.`;
     register,
     getCached: (pn) => _cache.get(pn.toUpperCase()),
     getKnownFamilies: () => Object.entries(KNOWN_FAMILIES).map(([k, v]) => ({ id: k, ...v })),
+    testProxy,
   };
 
 })();
